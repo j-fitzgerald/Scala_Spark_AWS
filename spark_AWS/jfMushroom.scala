@@ -1,0 +1,184 @@
+import org.apache.spark
+import org.apache.spark.mllib.rdd.RDDFunctions._
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.DataFrameNaFunctions
+import org.apache.spark.ml.feature.RFormula
+import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.sql.SparkSession
+
+
+object jfMushroom{
+
+  def main(args:Array [String]): Unit ={
+    val mySchema = new StructType(Array(
+      new StructField("Classification", StringType, true),
+      new StructField("CapShape", StringType, true),
+      new StructField("CapSurface", StringType, true),
+      new StructField("CapColor", StringType, true),
+      new StructField("Bruises", StringType, true),
+      new StructField("Odor", StringType, true),
+      new StructField("GillAttachment", StringType, true),
+      new StructField("GillSpacing", StringType, true),
+      new StructField("GillSize", StringType, true),
+      new StructField("GillColor", StringType, true),
+      new StructField("StalkShape", StringType, true),
+      new StructField("StalkRoot", StringType, true),
+      new StructField("StalkSurfaceAboveRing", StringType, true),
+      new StructField("StalkSurfaceBelowRing", StringType, true),
+      new StructField("StalkColorAboveRing", StringType, true),
+      new StructField("StalkColorBelowRing", StringType, true),
+      new StructField("VeilType", StringType, true),
+      new StructField("VeilColor", StringType, true),
+      new StructField("RingNumber", StringType, true),
+      new StructField("RingType", StringType, true),
+      new StructField("SporePrintColor", StringType, true),
+      new StructField("Population", StringType, true),
+      new StructField("Habitat", StringType, true)
+    ))
+
+    val csvLocation = args(0)
+    val confusionLocation = args(1)
+    val modelLocation = args(2)
+
+
+    val conf = new SparkConf().setAppName("jfMushroom")
+    val sc = new SparkContext(conf)
+
+    //val sparkSession = SparkSession.builder().master("local").appName("jfMushroom").getOrCreate()
+    val sparkSession = SparkSession.builder().appName("jfMushroom").getOrCreate()
+
+    val file = csvLocation
+    //val reader = spark.read.schema(mySchema).option("mode", "DROPMALFORMED")
+    val reader = sparkSession.read.schema(mySchema).option("mode", "DROPMALFORMED")
+    reader.option("header", false)
+    reader.option("delimiter", ",")
+
+    val mushroom = reader.csv(file)
+
+    val formula = new RFormula().setFormula("Classification ~ CapShape + CapSurface + CapColor + Bruises + Odor + GillAttachment + GillSpacing + GillSize + GillColor + StalkShape + StalkRoot + StalkSurfaceAboveRing + StalkSurfaceBelowRing + StalkColorAboveRing + StalkColorBelowRing + VeilColor + RingNumber + RingType + SporePrintColor + Population + Habitat")
+    val fitted = formula.fit(mushroom)
+    val prepared = fitted.transform(mushroom)
+
+    val Array(train, test) = prepared.randomSplit(Array(0.7,0.3))
+
+    val rf = new RandomForestClassifier().
+      setLabelCol("label").
+      setFeaturesCol("features").
+      setNumTrees(10)
+
+
+    val model = rf.fit(train)
+    val predictions = model.transform(test)
+    model.write.save(modelLocation)
+    analysis(predictions, false, confusionLocation, sc)
+
+    sc.stop()
+  }
+
+  def analysis(df :DataFrame, long:Boolean, file:String, sc:SparkContext) ={
+    // extract tp, tn, fp, fn
+    val tp = df.filter("label == 1.0").filter("prediction == 1.0").count
+    val tn = df.filter("label == 0.0").filter("prediction == 0.0").count
+    // false positive -- predict survive but didnt
+    val fp = df.filter("label == 0.0").filter("prediction == 1.0").count
+    //false negative -- survive, but predict not
+    val fn = df.filter("label == 1.0").filter("prediction == 0.0").count
+    val total = tp + fp + tn + fn
+    // ap, an, pp
+    val ap = df.filter("label == 1.0").count
+    val an = df.filter("label == 0.0").count
+    val pp = df.filter("prediction == 1.0").count
+
+    //val seq = sc.parallelize(Seq(("Label", "Edible", "Poisonous"),
+    val seq = sc.parallelize(Seq(("Label", "Edible", "Poisonous"),
+      ("Edible", tp.toString, fp.toString),
+      ("Poisonous", fn.toString, tn.toString)))
+    //seq.saveAsTextFile(file)
+    seq.coalesce(1).saveAsTextFile(file)
+
+    printMatrix(tp, tn, fp, fn)
+    accuracy(tp, tn, total)
+    missclassification(fp, fn, total)
+    wrong(df)
+    right(df)
+    if (long){
+      sensitivity(tp, ap)
+      fpRate(fp,an)
+      specificity(tn, an)
+      precision(tp, pp)
+      prevalence(ap, total)
+    }
+  }
+  //analysis(predictions, false)
+
+  def printMatrix(tp: Double, tn: Double, fp: Double, fn: Double)={
+    print("\t\tPredicted\n\t\tY\tN\n")
+    print("Actual\tY")
+    print("\t" + tp + "\t" + fn + "\n\tN\t" + fp + "\t" + tn + "\n\n")
+  }
+
+  // Accuracy How often is the model correct
+  def accuracy(tp: Double, tn: Double, total: Double):Double={
+    val accuracy = (tp + tn)/total*100
+    println("Accuracy: " + accuracy)
+    return accuracy
+  }
+
+  // Misclassification Rate How often is the model wrong
+  def missclassification(fp: Double, fn: Double, total:Double):Double = {
+    val missclassify = (fp + fn)/total*100
+    println("Missclassification: " + missclassify)
+    return missclassify
+  }
+
+  // True Positive Rate or Sensitivity or Recall When actually admit (yes) how often does model predict admit (yes)
+  def sensitivity(tp:Double, ap:Double):Double = {
+    val sense = tp/ap*100
+    println("Sensitivity: " + sense)
+    return sense
+  }
+
+  // False Positive Rate When it's actually no (deny), how often does it predict yes (admit)
+  def fpRate(fp:Double, an:Double):Double = {
+    val fpR = fp/an*100
+    println("FP Rate: " + fpR)
+    return fpR
+  }
+
+  // Specificity When it's actually no, how often does it predict no
+  def specificity(tn:Double, an:Double):Double = {
+    val spec = tn/an*100
+    println("Specificity: " + spec)
+    return spec
+  }
+
+  // Precision When it predicts yes, how often is it correct
+  def precision(tp:Double, pp:Double):Double = {
+    val prec = tp/pp*100
+    println("Precision: " + prec)
+    return prec
+  }
+
+  // Prevalence How often does the yes condition actually occur in our sample
+  def prevalence(ap:Double, total:Double):Double = {
+    val prev = ap/total*100
+    println("Prevalence: " + prev)
+    return prev
+  }
+
+  def wrong(df: DataFrame) ={
+    val wrongPredictions = df.where(expr("label != prediction"))
+    val countErrors = wrongPredictions.groupBy("label").agg(count("prediction").alias("Errors"))
+    countErrors.show
+  }
+
+  def right(df: DataFrame)={
+    val correctPredictions = df.where(expr("label == prediction"))
+    val countCorrectPredictions = correctPredictions.groupBy("label").agg(count("prediction").alias("Correct"))
+    countCorrectPredictions.show
+  }
+
+}

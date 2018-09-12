@@ -1,0 +1,3 @@
+(Label,Edible,Poisonous)
+(Edible,1172,0)
+(Poisonous,32,1349)

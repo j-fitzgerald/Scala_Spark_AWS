@@ -1,0 +1,10 @@
+JarFile Location
+s3://jfitzgerald/jf-hw5.jar
+
+Spark Submit
+--class jfMushroom
+
+Input Arguments:
+s3://jfitzgerald/input/mushrooms.csv
+s3://jfitzgerald/output/mushroomConfusion.txt
+s3://jfitzgerald/output/mushroomModel
